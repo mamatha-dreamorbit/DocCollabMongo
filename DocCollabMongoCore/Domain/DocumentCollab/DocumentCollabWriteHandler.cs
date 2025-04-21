@@ -41,7 +41,7 @@ public class DocumentCollabWriteHandler
         var tempCollection = EntityContext.Database.GetCollection<DocCollabTempCollectionDetails>(collectionName);
 
         var excludeId = Builders<DocCollabTempCollectionDetails>.Projection.Exclude("_id");
-        lastSyncedVersion = await GetLastedSyncedVersionAsync(fileInfo.RoomName);
+        lastSyncedVersion= GetLastedSyncedVersionAsync(fileInfo.RoomName);
         var newUpdatedActions = await tempCollection
                                     .Find(c => c.Version > lastSyncedVersion)
                                     .SortBy(c => c.Version)  // Sort in ascending order
@@ -65,11 +65,11 @@ public class DocumentCollabWriteHandler
         return JsonConvert.SerializeObject(content);
     }
 
-    public async Task<ActionInfo?> UpdateActionAsync(ActionInfo param)
+    public ActionInfo UpdateActionAsync(ActionInfo param)
     {
         try
         {
-            return await Task.Run(() => AddOperationsToCollectionAsync(param));
+            return AddOperationsToCollectionAsync(param);
         }
         catch (Exception ex)
         {
@@ -128,7 +128,7 @@ public class DocumentCollabWriteHandler
         }
     }
 
-    private async Task<ActionInfo> AddOperationsToCollectionAsync(ActionInfo action)
+    private ActionInfo AddOperationsToCollectionAsync(ActionInfo action)
     {
         try
         {
@@ -139,7 +139,7 @@ public class DocumentCollabWriteHandler
             var clientVersion = action.Version;
             var value = JsonConvert.SerializeObject(action);
 
-            var updateVersion = await InsertIntoTempCollectionAsync(collection, value!, clientVersion);
+            var updateVersion = InsertIntoTempCollection(collection, value!, clientVersion);
 
             if (updateVersion - clientVersion == 1)
             {
@@ -174,7 +174,7 @@ public class DocumentCollabWriteHandler
             if (updateVersion % DocCollabSaveThreshold == 0)
             {
                 //Saves operations from a temporary collection to the master collection
-                await UpdateOperationsToMasterTableAsync(action.RoomName, collectionName, true, updateVersion);
+                UpdateOperationsToMasterTableAsync(action.RoomName, collectionName, true, updateVersion);
             }
 
             return action;
@@ -186,7 +186,7 @@ public class DocumentCollabWriteHandler
         }
     }
 
-    private static async Task<int> InsertIntoTempCollectionAsync(IMongoCollection<DocCollabTempCollectionDetails> collection, string value, int clientVersion)
+    private static int InsertIntoTempCollection(IMongoCollection<DocCollabTempCollectionDetails> collection, string value, int clientVersion)
     {
         try
         {
@@ -197,29 +197,24 @@ public class DocumentCollabWriteHandler
             //.ToListAsync()) // Materialize into memory
             //.DefaultIfEmpty(0)
             //.Max();
+            var maxVersionDoc = collection.Find(FilterDefinition<DocCollabTempCollectionDetails>.Empty)
+                                        .SortByDescending(x => x.Version)
+                                        .Limit(1)
+                                        .Project<DocCollabTempCollectionDetails>(excludeId)
+                                        .FirstOrDefault();
 
-            var maxVersionDoc = await collection.Find(FilterDefinition<DocCollabTempCollectionDetails>.Empty)
-                                .SortByDescending(x => x.Version)
-                                .Limit(1)
-                                .Project<DocCollabTempCollectionDetails>(excludeId)
-                                .FirstOrDefaultAsync();
+            var lastVersion = maxVersionDoc?.Version ?? 0;
 
-            var lastVersion = maxVersionDoc?.Version ?? 0; // Default to 0 if no document exists
+            var updateVersion = lastVersion + 1;
 
-            //.Project<DocCollabTempCollectionDetails>(excludeId)
-            //.FirstOrDefaultAsync();
-
-            var updateVersion = lastVersion is { } ? lastVersion + 1 : 1;
-
-            var newTempRecord = new DocCollabTempCollectionDetails()
+            var newTempRecord = new DocCollabTempCollectionDetails
             {
                 Version = updateVersion,
                 Operation = value,
                 ClientVersion = clientVersion,
                 CreatedDate = DateTime.UtcNow
             };
-            await collection.InsertOneAsync(newTempRecord);
-
+            collection.InsertOne(newTempRecord);
             return updateVersion;
         }
         catch (Exception ex)
@@ -243,7 +238,7 @@ public class DocumentCollabWriteHandler
             var document = new WordDocument();
             if (dbMasterCollection is { } && dbMasterCollection.StorageIdentifier is { })
             {
-                document = await DownloadDocCollabDocAsync(dbMasterCollection.RoomName, dbMasterCollection.StorageIdentifier);
+                document = DownloadDocCollabDocAsync(dbMasterCollection.RoomName, dbMasterCollection.StorageIdentifier);
             }
 
             return document;
@@ -271,7 +266,7 @@ public class DocumentCollabWriteHandler
             }
 
             // Upload the sfdt content to s3
-            var storageIdentifier = await UploadDocCollabTextAsync(roomName, sfdtString);
+            var storageIdentifier = UploadDocCollabTextAsync(roomName, sfdtString);
 
             // Map ActionInfo to DocumentCollabMaster.
             var masterDocument = new DocumentCollabMaster
@@ -325,7 +320,7 @@ public class DocumentCollabWriteHandler
         }
     }
 
-    private async Task<int> GetLastedSyncedVersionAsync(string roomName)
+    private int GetLastedSyncedVersionAsync(string roomName)
     {
         var collectionName = $"{ApplicationConstant.DocumentCollabTempTableVersionInfo}";
         var collection = EntityContext.Database.GetCollection<DocCollabSyncVersionInfo>(collectionName);
@@ -333,9 +328,12 @@ public class DocumentCollabWriteHandler
         var filter = Builders<DocCollabSyncVersionInfo>.Filter.Eq("RoomName", roomName);
         var excludeId = Builders<DocCollabSyncVersionInfo>.Projection.Exclude("_id");
 
-        var document = await collection.Find(filter)
-            .Project<DocCollabSyncVersionInfo>(excludeId).FirstOrDefaultAsync();
-
+        var document = collection.Find(filter)
+            .Project<DocCollabSyncVersionInfo>(excludeId)
+            .FirstOrDefault();
+        if (document == null) {
+            return 0;
+        }
         return document.LastSavedVersion;
     }
 
@@ -400,7 +398,7 @@ public class DocumentCollabWriteHandler
         return clientVersion;
     }
 
-    public async Task UpdateOperationsToMasterTableAsync(string roomName, string tempCollectionName, bool partialSave, int endVersion)
+    public void UpdateOperationsToMasterTableAsync(string roomName, string tempCollectionName, bool partialSave, int endVersion)
     {
         try
         {
@@ -408,15 +406,15 @@ public class DocumentCollabWriteHandler
 
             var excludeId = Builders<DocCollabTempCollectionDetails>.Projection.Exclude("_id");
 
-            var lastSyncedVersion = await GetLastedSyncedVersionAsync(roomName);
+            var lastSyncedVersion = GetLastedSyncedVersionAsync(roomName);
 
             var newUpdatedActions = partialSave ?
-                await tempCollection
+                tempCollection
                 .Find(c => c.Version > lastSyncedVersion && c.Version <= endVersion)
-                .Project<DocCollabTempCollectionDetails>(excludeId).ToListAsync() :
-                    await tempCollection
+                .Project<DocCollabTempCollectionDetails>(excludeId).ToList() :
+                    tempCollection
                     .Find(c => c.Version > lastSyncedVersion)
-                    .Project<DocCollabTempCollectionDetails>(excludeId).ToListAsync();
+                    .Project<DocCollabTempCollectionDetails>(excludeId).ToList();
 
             if (newUpdatedActions is { })
             {
@@ -435,9 +433,9 @@ public class DocumentCollabWriteHandler
                     .OrderByDescending(a => a.Version)
                     .First();
 
-                var dbMasterCollection = await EntityContext.DocumentCollabMaster
+                var dbMasterCollection = EntityContext.DocumentCollabMaster
                                                 .Find(x => x.RoomName == roomName && x.IsActive)
-                                                .FirstOrDefaultAsync();
+                                                .FirstOrDefault();
 
                 // Start with a new document if no previous document exists
                 //var document = new WordDocument();
@@ -448,7 +446,7 @@ public class DocumentCollabWriteHandler
 
                 if (dbMasterCollection is { } && dbMasterCollection.StorageIdentifier is { })
                 {
-                    ej2Document = await DownloadDocCollabDocAsync(dbMasterCollection.RoomName, dbMasterCollection.StorageIdentifier);
+                    ej2Document = DownloadDocCollabDocAsync(dbMasterCollection.RoomName, dbMasterCollection.StorageIdentifier);
                 }
 
                 // Apply the latest operation's changes to the document
@@ -473,7 +471,7 @@ public class DocumentCollabWriteHandler
                 // Upload the sfdt content to s3
                 var sfdtContent = JsonConvert.SerializeObject(handler.Document);
 
-                var storageIdentifier = await UploadDocCollabTextAsync(roomName, sfdtContent);
+                var storageIdentifier = UploadDocCollabTextAsync(roomName, sfdtContent);
 
                 // Map ActionInfo to DocumentCollabMaster.
                 var masterDocument = new DocumentCollabMaster
@@ -501,7 +499,7 @@ public class DocumentCollabWriteHandler
                     .Set(m => m.LastModifiedByUserId, masterDocument.LastModifiedByUserId)
                     .Set(m => m.LastModifiedDate, masterDocument.LastModifiedDate);
 
-                await EntityContext.DocumentCollabMaster.UpdateOneAsync(masterFilter, masterUpdate, new UpdateOptions { IsUpsert = true });
+                EntityContext.DocumentCollabMaster.UpdateOne(masterFilter, masterUpdate, new UpdateOptions { IsUpsert = true });
 
                 if (!partialSave)
                 {
@@ -524,7 +522,7 @@ public class DocumentCollabWriteHandler
             }
             else
             {
-                await UpdateModifiedVersionAsync(roomName, endVersion);
+                UpdateModifiedVersionAsync(roomName, endVersion);
             }
         }
         catch (Exception ex)
@@ -534,7 +532,7 @@ public class DocumentCollabWriteHandler
         }
     }
 
-    public async Task<WordDocument> DownloadDocCollabDocAsync(string roomName, string storageIdentifier)
+    public WordDocument DownloadDocCollabDocAsync(string roomName, string storageIdentifier)
     {
         //TODO: Convert the sdft string to a document and then Load - also apply changes to Upload
         var fileFullPath = ToPath(roomName, storageIdentifier);
@@ -558,7 +556,7 @@ public class DocumentCollabWriteHandler
         // Read from local file
         using (var fileStream = new FileStream(fileFullPath, FileMode.Open, FileAccess.Read))
         {
-            await fileStream.CopyToAsync(stream);
+            fileStream.CopyTo(stream);
         }
 
         stream.Position = 0;
@@ -612,7 +610,7 @@ public class DocumentCollabWriteHandler
 
     public void DropTemporaryCollection(string collectionName) => EntityContext.Database.DropCollection(collectionName);
 
-    private async Task<string> UploadDocCollabTextAsync(string roomName, string sfdtContent)
+    private string UploadDocCollabTextAsync(string roomName, string sfdtContent)
     {
         //TODO:Do not convert the sfdt to document and upload - keep it a sfdt.
         var document = WordDocument.Save(sfdtContent);
@@ -635,7 +633,7 @@ public class DocumentCollabWriteHandler
         // Write file locally
         using (var fileStream = new FileStream(fileFullPath, FileMode.Create, FileAccess.Write))
         {
-            await memoryStream.CopyToAsync(fileStream);
+            memoryStream.CopyTo(fileStream);
         }
         return storageIdentifier;
     }

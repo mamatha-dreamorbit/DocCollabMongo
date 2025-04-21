@@ -14,7 +14,7 @@ public sealed class DocumentEditorHub : Hub
 
     public DocumentEditorHub(DocumentCollabWriteHandler documentCollabWriteHandler) => _documentCollabWriteHandler = documentCollabWriteHandler;
 
-    public async Task JoinGroupAsync(ActionInfo info)
+    public async Task JoinGroup(ActionInfo info)
     {
         s_userManager.TryAdd(Context.ConnectionId, info);
 
@@ -103,7 +103,7 @@ public sealed class DocumentEditorHub : Hub
                     var collectionName = $"{ApplicationConstant.DocumentCollabTempTablePrefix}{roomName}";
                     GroupManager.Remove(roomName);
                     //Push all the updates to the master collection and Publish the same
-                    await _documentCollabWriteHandler.UpdateOperationsToMasterTableAsync(roomName, collectionName, false, 0);
+                    _documentCollabWriteHandler.UpdateOperationsToMasterTableAsync(roomName, collectionName, false, 0);
 
                     //Drop the temporary collection on disconnection
                     _documentCollabWriteHandler.DropTemporaryCollection(collectionName);

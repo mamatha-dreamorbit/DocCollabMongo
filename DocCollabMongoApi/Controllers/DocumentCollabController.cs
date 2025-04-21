@@ -27,7 +27,7 @@ namespace DocCollabMongoApi.Controllers
         public async Task<ActionInfo?> UpdateAction([FromServices] DocumentCollabWriteHandler handler, [FromBody] ActionInfo param)
         {
             _logger.LogInformation($"ActionInfo for RoomName: {param.RoomName}, for User: {param.CurrentUser} - {param}");
-            var modifiedAction = await handler.UpdateActionAsync(param);
+            ActionInfo modifiedAction = handler.UpdateActionAsync(param);
             await _hubContext.Clients.Group(param.RoomName).SendAsync("dataReceived", "action", modifiedAction);
             return modifiedAction;
         }
